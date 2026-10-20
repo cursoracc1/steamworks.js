@@ -75,8 +75,11 @@ pub fn on_connection_status(status: &sys::SteamNetConnectionStatusChangedCallbac
     let listen_socket = info.m_hListenSocket;
     {
         let mut state = STATE.lock().unwrap();
-        if listen_socket != 0 && state.listen_sockets.contains(&listen_socket) {
-            // Incoming request: tracked so shutdown frees it even if never accepted.
+        let incoming = info.m_eState == sys::ESteamNetworkingConnectionState::k_ESteamNetworkingConnectionState_Connecting;
+        // Only a new incoming request is tracked (so shutdown frees it even if never
+        // accepted). Later notifications, e.g. the transition to None after we
+        // closed the handle, must not re-add it.
+        if incoming && listen_socket != 0 && state.listen_sockets.contains(&listen_socket) {
             state.connections.insert(connection);
         }
     }
