@@ -1,6 +1,12 @@
 export declare function init(appId?: number | undefined | null): void
 export declare function restartAppIfNecessary(appId: number): boolean
+/** The single callback pump. A no-op once shut down, so a late timer tick is harmless. */
 export declare function runCallbacks(): void
+/**
+ * Closes tracked sockets, unregisters raw callbacks and releases the client
+ * (SteamAPI_Shutdown runs when the last client reference drops).
+ */
+export declare function shutdown(): void
 export interface PlayerSteamId {
   steamId64: bigint
   steamId32: string
@@ -121,6 +127,62 @@ export declare namespace localplayer {
   export function getIpCountry(): string
   export function setRichPresence(key: string, value?: string | undefined | null): void
 }
+export declare namespace lobby {
+  /** `comparison` is ELobbyComparison: -2 <=, -1 <, 0 ==, 1 >, 2 >=, 3 !=. */
+  export interface StringFilter {
+    key: string
+    value: string
+    comparison: number
+  }
+  export interface NumberFilter {
+    key: string
+    value: number
+    comparison: number
+  }
+  export interface NearFilter {
+    key: string
+    value: number
+  }
+  /**
+   * Applied together with the request in one call, so filters never leak
+   * between queries.
+   */
+  export interface LobbyFilter {
+    strings?: Array<StringFilter>
+    numbers?: Array<NumberFilter>
+    near?: Array<NearFilter>
+    slotsAvailable?: number
+    /** ELobbyDistanceFilter: 0 close, 1 default, 2 far, 3 worldwide. */
+    distance?: number
+    count?: number
+  }
+  /**
+   * `lobby_type`: 0 private, 1 friends only, 2 public, 3 invisible.
+   * Completion: `lobby-create-result`.
+   */
+  export function create(lobbyType: number, maxMembers: number): number
+  /** Completion: `lobby-join-result`; the raw EChatRoomEnterResponse is in `lobby-enter`. */
+  export function join(lobby: string): number
+  /** Completion: `lobby-list-result` with public data and counts for each match. */
+  export function requestList(filter?: LobbyFilter | undefined | null): number
+  /**
+   * Snapshot of a lobby. Owner and members are only valid for lobbies we are in;
+   * `member_keys` selects which member data keys to read (Steam cannot enumerate them).
+   */
+  export function get(lobby: string, memberKeys?: Array<string> | undefined | null): import('./steam-events').LobbySnapshot
+  export function leave(lobby: string): void
+  /** Native return only; owner-side and remote observation decide the outcome. */
+  export function setData(lobby: string, key: string, value: string): boolean
+  export function deleteData(lobby: string, key: string): boolean
+  export function setMemberData(lobby: string, key: string, value: string): void
+  export function getMemberData(lobby: string, member: string, key: string): string | null
+  export function setOwner(lobby: string, newOwner: string): boolean
+  export function setJoinable(lobby: string, joinable: boolean): boolean
+  /** Triggers `lobby-data-update`; works for lobbies we are not in. */
+  export function requestData(lobby: string): boolean
+  /** Up to 4 KB; every member (including the sender) receives `lobby-chat-msg`. */
+  export function sendChat(lobby: string, data: Buffer): boolean
+}
 export declare namespace matchmaking {
   export const enum LobbyType {
     Private = 0,
@@ -209,6 +271,75 @@ export declare namespace overlay {
   export function activateInviteDialog(lobbyId: bigint): void
   export function activateToWebPage(url: string): void
   export function activateToStore(appId: number, flag: StoreFlag): void
+}
+export declare namespace runtime {
+  /** Returns and clears queued events in arrival order. */
+  export function drainEvents(): Array<import('./steam-events').SteamEvent>
+  /** Callback pump timing since the last reset, plus queue depth and overflow. */
+  export function pumpStats(reset?: boolean | undefined | null): import('./steam-events').PumpStats
+  export function identity(): import('./steam-events').Identity
+}
+export declare namespace sockets {
+  /**
+   * Connection options applied at creation time (inherited by accepted connections
+   * when set on a listen socket). Values use the SDK's int32 units.
+   */
+  export interface SocketOptions {
+    /** k_ESteamNetworkingConfig_P2P_Transport_ICE_Enable: 0 = SDR only, 2147483647 = all. */
+    iceEnable?: number
+    /** k_ESteamNetworkingConfig_SendBufferSize in bytes. */
+    sendBufferSize?: number
+    /** k_ESteamNetworkingConfig_TimeoutInitial in milliseconds. */
+    timeoutInitialMs?: number
+    /** k_ESteamNetworkingConfig_TimeoutConnected in milliseconds. */
+    timeoutConnectedMs?: number
+  }
+  export interface SendResult {
+    /** Raw EResult; 1 = OK. */
+    result: number
+    messageNumber: number
+  }
+  export interface NetMessage {
+    connection: number
+    /** Sender SteamID from the SDK, decimal string. */
+    peer: string
+    /** Copied payload; the native message is released before return. */
+    data: Buffer
+    messageNumber: number
+    /** SteamNetworkingUtils local clock, see `localTimestampUsec`. */
+    receivedUsec: number
+    flags: number
+    lane: number
+  }
+  export function initRelayNetworkAccess(): void
+  /** Returns raw ESteamNetworkingAvailability. */
+  export function initAuthentication(): number
+  export function authenticationStatus(): { availability: number; debug: string }
+  export function relayStatus(): import('./steam-events').RelayStatus
+  export function localTimestampUsec(): number
+  export function createListenSocketP2P(virtualPort: number, options?: SocketOptions | undefined | null): number
+  /** Connections accepted on this socket are closed by Steam. */
+  export function closeListenSocket(socket: number): boolean
+  export function connectP2P(steamId: string, virtualPort: number, options?: SocketOptions | undefined | null): number
+  /** Returns raw EResult; on OK the connection joins the shared poll group. */
+  export function acceptConnection(connection: number): number
+  /**
+   * Closes the connection and frees the handle. Also required after the peer
+   * closed or a problem was detected. Returns false for unknown handles.
+   */
+  export function closeConnection(connection: number, reason: number, debug: string | undefined | null, linger: boolean): boolean
+  /** Steam copies `data`; flags are k_nSteamNetworkingSend_* (9 = ReliableNoNagle). */
+  export function sendMessage(connection: number, data: Buffer, flags: number): SendResult
+  /**
+   * Drains up to `max_messages` from the shared poll group. Each payload is
+   * copied and the native message released before returning.
+   */
+  export function receiveMessages(maxMessages: number): Array<NetMessage>
+  export function connectionInfo(connection: number): import('./steam-events').ConnectionInfo | null
+  export function realtimeStatus(connection: number): import('./steam-events').RealtimeStatus | null
+  export function detailedStatus(connection: number): string | null
+  /** Tracked handles and message accounting (received must equal released). */
+  export function stats(): import('./steam-events').SocketStats
 }
 export declare namespace stats {
   export function getInt(name: string): number | null
@@ -336,6 +467,7 @@ export declare namespace workshop {
    * @returns an array of subscribed workshop item ids
    */
   export function getSubscribedItems(): Array<bigint>
+  export function deleteItem(itemId: bigint): Promise<void>
   export const enum UGCQueryType {
     RankedByVote = 0,
     RankedByPublicationDate = 1,

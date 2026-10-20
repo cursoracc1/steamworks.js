@@ -21,19 +21,31 @@ if (platform === 'win32' && arch === 'x64') {
 let runCallbacksInterval = undefined
 
 /**
- * Initialize the steam client or throw an error if it fails
+ * Initialize the steam client or throw an error if it fails.
+ * The returned timer is the only Steam callback pump; do not call runCallbacks elsewhere.
  * @param {number} [appId] - App ID of the game to load, if undefined, will search for a steam_appid.txt file
- * @returns {Omit<Client, 'init' | 'runCallbacks'>}
+ * @param {{ callbackIntervalMs?: number }} [options] - Callback pump interval, default 1000/30 ms
+ * @returns {Omit<Client, 'init' | 'runCallbacks' | 'shutdown'>}
 */
-module.exports.init = (appId) => {
-    const { init: internalInit, runCallbacks, restartAppIfNecessary, ...api } = nativeBinding
+module.exports.init = (appId, options = {}) => {
+    const { init: internalInit, runCallbacks, restartAppIfNecessary, shutdown, ...api } = nativeBinding
 
     internalInit(appId)
 
     clearInterval(runCallbacksInterval)
-    runCallbacksInterval = setInterval(runCallbacks, 1000 / 30)
+    runCallbacksInterval = setInterval(runCallbacks, options.callbackIntervalMs ?? 1000 / 30)
 
     return api
+}
+
+/**
+ * Stop the callback pump, close tracked sockets/listen sockets, unregister callbacks
+ * and release the Steam client. Safe to call more than once.
+ */
+module.exports.shutdown = () => {
+    clearInterval(runCallbacksInterval)
+    runCallbacksInterval = undefined
+    nativeBinding.shutdown()
 }
 
 /**
